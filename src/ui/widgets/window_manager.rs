@@ -1,216 +1,192 @@
-use crate::common::{DataBox, UITile, BLANKTILE, FILLEDTILE};
-use crate::ui::{UI, Widget, Action, DrawBound, Key};
-use crossterm::event::{Event, KeyEvent, KeyCode, MouseEventKind, MouseButton};
-use std::collections::HashMap;
-use std::iter::zip;
+use super::widget_package::*;
 
-fn draw_header(ui: &DataBox<UI>, x: u16, y: u16, width: u16, highlighted: bool) {
-    let mut write_ui = ui.write();
-    write_ui.goto(x,y);
+fn draw_header(buffer: &mut WidgetBuffer, x: u16, y: u16, width: u16, highlighted: bool) {
+    buffer.move_to(x,y);
     if highlighted {
-        write_ui.set_fg(137,207,240);
-        write_ui.term.write::<String>(&(0..width).map(|_| "▅").collect::<String>());
-        write_ui.term.clear_style();
+        let _ = buffer.wstr(&(0..width).map(|_| "▄").collect::<String>(), Style::from_fg(Rgb(137,207,240)));
     } else {
-        write_ui.term.write::<String>(&(0..width).map(|_| "▅").collect::<String>());
+        let _ = buffer.wstr(&(0..width).map(|_| "▄").collect::<String>(), Style::default());
     }
 }
 
-enum ClickEffect {
-    Grab(usize),
-    PassOn(usize, u16, u16),
+enum ClickLocation {
+    Header(usize),
+    PassOn(usize),
+    BottomRight(usize),
     None,
 }
 
-pub struct WindowManager {
-    // Ordered: front to back
-    children: Vec<usize>,
-    children_positions: Vec<DrawBound>,
-    action_map: HashMap<Key, Box<dyn Action>>,
-    current_child: usize,
-    grab_starting_position: Option<(u16, u16, u16, u16)>,
-    just_moved: bool,
+#[derive(Default)]
+enum Grab {
+    #[default]
+    None,
+    BottomRight((u16, u16), (u16,u16)),
+    Header((u16, u16), (u16, u16))
 }
 
+fn subtract_minimum(a: u16, b: u16, min: u16) -> u16 {
+    if b+min > a {min} else {a-b}
+}
+
+#[derive(Serialize,Deserialize)]
+pub struct WindowManager {
+    front_to_back: Vec<(usize, (u16,u16), WidgetBound)>,
+    #[serde(skip)]
+    current_grab: Grab,
+}
 
 impl WindowManager {
-    fn new_with() -> Self {
+    pub fn new() -> Self {
         Self {
-            children: Vec::new(),
-            action_map: HashMap::new(),
-            grab_starting_position: None,
-            children_positions: Vec::new(),
-            current_child: 0,
-            just_moved: false,
+            front_to_back: Vec::new(),
+            current_grab: Grab::None,
         }
     }
     
     // Clicks should be offset by whatever
-    fn what_does_this_click_do(&self, click_x: u16, click_y: u16) -> ClickEffect {
-        let mut i = self.children.len();
-        while i > 0 {
-            i -= 1;
-            let this_bound = self.children_positions[i];
+    fn what_does_this_click_do(&self, click_x: u16, click_y: u16) -> ClickLocation {
+        for i in 0..self.front_to_back.len() {
+            let (child_num, (x,y),this_bound) = self.front_to_back[i];
             // y is correct; 1 is added.
-            if click_y == this_bound.y && click_x >= this_bound.x && click_x < this_bound.end_x() {
-                return ClickEffect::Grab(i);
-            } else if click_y > this_bound.y && click_y <= this_bound.end_y() && click_x >= this_bound.x && click_x < this_bound.end_x() {
-                return ClickEffect::PassOn(i, click_x - this_bound.x, click_y - this_bound.y - 1);
+            if click_y == y-1 && click_x >= x && click_x < x+this_bound.width {
+                return ClickLocation::Header(i);
+            } else if click_y+1 == y+this_bound.height && 
+                (click_x == x+this_bound.width-1 || click_x == x+this_bound.width) {
+                // A 2-character wide grab width because 1 character seemed to be too small
+                // (crossterm does not read click locations well)
+                return ClickLocation::BottomRight(i);
+            } else if click_y >= y && click_y < y+this_bound.height && click_x >= x && click_x < this_bound.width+x {
+                return ClickLocation::PassOn(child_num);
             }
         }
-        return ClickEffect::None;
+        return ClickLocation::None;
     }
     
-    pub fn selected(&self) -> usize {
-        return self.children[self.children.len()-1];
+    pub fn selected_child(&self) -> usize {
+        return self.front_to_back[0].0;
     }
     
     fn change_selected(&mut self, which: usize) {
-        let end = self.children.len()-1;
-        self.children.swap(which, end);
-        self.children_positions.swap(which, end);
-    }
-    
-    pub fn keymap(&mut self, map: HashMap<Key, Box<dyn Action>>) {
-        self.action_map = map;
-    }
-    
-    pub fn add_child(&mut self, window: usize) {
-        self.children.push(window);
-        self.children_positions.push(DrawBound {x: 0, y: 0, width: 20, height: 10})
-    }
-    
-    pub fn add_child_leave_controlled(&mut self, window: usize) {
-        self.children.push(window);
-        self.children_positions.push(DrawBound {x: 0, y: 0, width: 20, height: 10});
-        let end = self.children.len()-1;
-        self.children.swap(end-1, end);
-        self.children_positions.swap(end-1, end);
+        self.front_to_back.swap(which, 0);
     }
 }
 
 impl Widget for WindowManager {
-    fn new_unboxed() -> Self { Self::new_with() }
-    
-    fn draw(me: DataBox<Self>, ui: DataBox<UI>, bound: DrawBound, force: bool) -> bool {
-        let read_me = me.read();
-        let mut force_redraw = force;
-        if read_me.just_moved {
-            let mut write_ui = ui.write();
-            for row in bound.y..bound.end_y() {
-                write_ui.goto(bound.y,row);
-                write_ui.term.write::<String>(&(0..bound.width).map(|_| " ").collect::<String>());
-            }
-            force_redraw = true;
+    fn child_sizes(&self, bound: WidgetBound) -> Vec<WidgetBound> {
+        let mut vec = vec![WidgetBound {width: 0,height:0}; self.front_to_back.len()];
+        for i in 0..self.front_to_back.len() {
+            vec[self.front_to_back[i].0] = self.front_to_back[i].2;
         }
-        for i in 0..read_me.children.len() {
-            let theoretical_bound = read_me.children_positions[i];
-            let real_x = bound.x + theoretical_bound.x;
-            let real_y = bound.y + theoretical_bound.y + 1;
-            let real_bound = DrawBound {
-                // x is added to bound
-                x: real_x,
-                // 1 is added to y bound; space for grab
-                y: real_y,
-                // height is limited at edge of screen
-                height: {
-                    if real_y+theoretical_bound.height >= bound.end_y() {
-                        if real_y > bound.end_y() {
-                            0
-                        } else {
-                            bound.end_y() - real_y
-                        }
-                    } else {
-                        theoretical_bound.height
-                    }
-                },
-                width: {
-                    if real_x+theoretical_bound.width >= bound.end_x() {
-                        if real_x > bound.end_x() {
-                            0
-                        } else {
-                            bound.end_x() - real_x
-                        }
-                    } else {
-                        theoretical_bound.width
-                    }
-                },
-            };
-            let header_x = real_bound.x;
-            let header_y = real_bound.y-1;
-            let header_width = real_bound.width;
-            draw_header(&ui, header_x, header_y, header_width, i == read_me.children.len()-1);
-            UI::draw_one(ui.clone(), read_me.children[i], real_bound, force_redraw);
+        return vec;
+    }
+
+    fn child_number(&mut self, desired: usize) -> usize {
+        for i in 0..desired {
+            self.front_to_back.push((i, (0,0), WidgetBound {width: 30, height: 10}));
         }
-        return true;
+        desired
+    }
+
+    fn draw(&self, children: &mut [&mut WidgetData], buffer: &mut WidgetBuffer) {
+        let bound = buffer.bound();
+        for _row in 0..bound.height {
+            buffer.blank_till_end(Style::default());
+        }
+        if self.front_to_back.len() == 0 {return}
+        let first = self.front_to_back[0].0;
+        for (child_num, (x,y),bound) in &self.front_to_back {
+            draw_header(buffer, *x, y-1, bound.width, *child_num == first);
+            children[*child_num].copy_to(((*x,*y),(0,0)), *bound, buffer);
+        }
     }
     
-    fn consume_action(me: DataBox<Self>, ui: DataBox<UI>, event: Event) -> Option<Box<dyn Action>> {
-        match event {
-            Event::Key(key) => {
-                let reformat_key = Key {code: key.code, modifiers: key.modifiers};
-                let read_me = me.read();
-                let maybe_action = read_me.action_map.get(&reformat_key);
-                match maybe_action {
-                    Some(a) => return Some(a.awful_clone()),
-                    None => {
-                        let relevant_widget = read_me.selected();
-                        return UI::consume_action_one(ui, relevant_widget, event);
+    fn poll(&mut self, my_id: Id, event: Event, event_translation: Option<Candidate>, poll: &Poll) -> EventResult {
+        if let Event::Mouse(mouse) = event {
+            match self.current_grab {
+                Grab::BottomRight(..) | Grab::Header(..) => match mouse.kind {
+                    // Release it, there's a problem;
+                    // shouldn't be able to click when dragging
+                    MouseEventKind::Down(MouseButton::Left) |
+                    MouseEventKind::Moved => {
+                        self.current_grab = Grab::None;
                     },
-                }
-            },
-            Event::Mouse(mouse) => {
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        let mut write_me = me.write();
-                        let effect = write_me.what_does_this_click_do(mouse.column, mouse.row);
-                        match effect {
-                            ClickEffect::Grab(some_window) => {
-                                let start_bound = write_me.children_positions[some_window];
-                                write_me.grab_starting_position = Some((start_bound.x, start_bound.y, mouse.column, mouse.row));
-                                write_me.change_selected(some_window);
-                                return None;
-                            },
-                            _ => (),
-                        }
+                    // The expected behavior
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        self.current_grab = Grab::None;
+                        // The event has been consumed
+                        return EventResult::Nothing;
                     },
                     MouseEventKind::Drag(MouseButton::Left) => {
-                        let mut write_me = me.write();
-                        match write_me.grab_starting_position {
-                            Some((bound_x, bound_y, mouse_x, mouse_y)) => {
-                                let window = write_me.children.len()-1;
-                                write_me.just_moved = true;
-                                let old_bound = write_me.children_positions[window];
-                                let new_x = if mouse_x > bound_x+mouse.column {
-                                    0
-                                } else {
-                                    (bound_x+mouse.column)-mouse_x
-                                };
-                                let new_y = (bound_y+mouse.row)-mouse_y;
-                                write_me.children_positions[window] = DrawBound {
-                                    x: new_x,
-                                    y: new_y,
-                                    width: old_bound.width,
-                                    height: old_bound.height,
-                                };
+                        match self.current_grab {
+                            // Move the window
+                            Grab::Header(original_pos, original_mouse) => {
+                                let (child_num, old_loc, bound) = self.front_to_back[0];
+                                let new_x = subtract_minimum(original_pos.0+mouse.column, original_mouse.0, 0);
+                                // The minimum y is 1, because we need space for the header.
+                                let new_y = subtract_minimum(original_pos.1+mouse.row, original_mouse.1, 1);
+                                self.front_to_back[0] = (
+                                    child_num,
+                                    (new_x, new_y),
+                                    bound
+                                );
+                                // The event has been consumed
+                                return EventResult::Changed;
                             },
-                            None => (),
-                        }
+                            // Resize the window
+                            Grab::BottomRight(original_size, original_mouse) => {
+                                let (child_num, old_loc, bound) = self.front_to_back[0];
+                                let new_width = subtract_minimum(original_size.0+mouse.column, original_mouse.0, 1);
+                                // Minimum height of 1
+                                let new_height = subtract_minimum(original_size.1+mouse.row, original_mouse.1, 1);
+                                self.front_to_back[0] = (
+                                    child_num,
+                                    old_loc,
+                                    WidgetBound {
+                                        width: new_width,
+                                        height: new_height
+                                    }
+                                );
+                                // The event has been consumed
+                                return EventResult::Changed;
+                            },
+                            Grab::None => ()
+                        };
                     },
-                    MouseEventKind::Up(MouseButton::Left) => {
-                        me.write().just_moved = false;
-                        me.write().grab_starting_position = None;
-                    },
-                    _ => (),
-                }
-                
-            },
-            Event::FocusLost => {
-                me.write().just_moved = false;
-                me.write().grab_starting_position = None;
-            },
-            _ => (),
+                    _ => ()
+                },
+                Grab::None => ()
+            };
+            // Standard behavior; no current grab or mouse is irrelevant to grab
+            let location = self.what_does_this_click_do(mouse.column, mouse.row);
+            match (location, mouse.kind) {
+                (ClickLocation::Header(child), MouseEventKind::Down(MouseButton::Left)) => {
+                    let (_, (x,y), bound) = self.front_to_back[child];
+                    self.current_grab = Grab::Header((x, y), (mouse.column, mouse.row));
+                    self.change_selected(child);
+                    return EventResult::Changed;
+                },
+                (ClickLocation::BottomRight(child), MouseEventKind::Down(MouseButton::Left)) => {
+                    let (_, (x,y), bound) = self.front_to_back[child];
+                    self.current_grab = Grab::BottomRight((bound.width, bound.height), (mouse.column, mouse.row));
+                    self.change_selected(child);
+                    return EventResult::Changed;
+                },
+                (ClickLocation::PassOn(child), MouseEventKind::Down(_)) |
+                (ClickLocation::PassOn(child), MouseEventKind::ScrollUp) |
+                (ClickLocation::PassOn(child), MouseEventKind::ScrollDown) => {
+                    self.change_selected(child);
+                    return EventResult::Changed;
+                },
+                (ClickLocation::PassOn(child), _) => {
+                    return EventResult::PassToChild(child as i32);
+                },
+                _ => return EventResult::Nothing
+            }
+        } else {
+            if let Event::FocusLost = event {
+                self.current_grab = Grab::None;
+            }
+            return EventResult::PassToChild(self.selected_child() as i32);
         }
-        return None;
     }
 }

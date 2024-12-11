@@ -1,6 +1,9 @@
 use std::cell::{RefCell, RefMut, Ref};
 use std::rc::Rc;
 
+// This form of box is copyable and writable.
+// This means that multiple copies may exist of it, but it is a runtime error to make two copies writable at the same time.
+// Note that care must be taken to not create cycles.
 pub struct DataBox<T> {
     data: Rc<RefCell<T>>,
 }

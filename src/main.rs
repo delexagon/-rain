@@ -1,55 +1,44 @@
+mod state_machine;
+
+fn main() {
+    if let Some(_) = option_env!("misctest") {
+        // For testing miscellaneous functionality.
+        //let args: Vec<u16> = std::env::args().skip(1).map(|x| x.parse().unwrap()).collect();
+    } else if let Some(_) = option_env!("widgettest") {
+        // For testing the functionality of widgets.
+        // Please place the relevant UI manipulation code below.
+        if let Err(e) = state_machine::widget_test(|ui, _res| {
+            use crate::ui::widgets::*;
+            let (_,v) = ui.new_context(ExtTree((true, {
+                let mut l = LinesScroll::new(10); 
+                l.push("holy fucking shit that was a little overkill but what do you expect from THE BEST??!?!?!?!?!?!"); l.into()}), vec![]));
+            let [widget] = v[..] else {panic!()};
+            return widget;
+        }) {println!(crate::translate!(start_err), e)}
+    } else if let Some(_) = option_env!("maptest") {
+        // For testing the appearance and functionality of maps.
+        // This will find the first available square in the map to place
+        // the player on.
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let args2: Vec<&str> = args.iter().map(|arg| arg.as_str()).collect();
+        if let Err(e) = state_machine::map_test(&args2) {
+            println!(crate::translate!(start_err), e)
+        }
+    } else {
+        let skip;
+        if let Some(_) = option_env!("skipintro") {
+            skip = true;
+        } else {
+            skip = false;
+        }
+        if let Err(e) = state_machine::normal_start(skip) {println!(crate::translate!(start_err), e)}
+    }
+}
 
 mod ui;
 mod common;
 mod game;
-
-use common::DataBox;
-
-use ui::{UI, Widget, Action, Lines};
-use game::{game_start};
-
-use std::any::Any;
-
-#[derive(Clone)]
-enum ActionOut {
-    Start,
-    Exit,
-    None,
-} crate::to_action!(ActionOut);
-
-fn main() {
-    let ui = UI::new();
-    let lines = Lines::<ActionOut>::new();
-    {
-        let mut write_lines = lines.write();
-        write_lines.add_line(String::from("Start"));
-        write_lines.add_line(String::from("Continue"));
-        write_lines.add_line(String::from("Options"));
-        write_lines.add_line(String::from("Exit"));
-        
-        fn select(_: DataBox<Lines<ActionOut>>, _: DataBox<UI>, line: usize) -> ActionOut {
-            match line {
-                0 => ActionOut::Start,
-                1 => ActionOut::None,
-                2 => ActionOut::None,
-                3 => ActionOut::Exit,
-                _ => ActionOut::None,
-            }
-        }
-        write_lines.select_func = Some(select);
-    }
-    let menu_screen;
-    { menu_screen = ui.write().add_widget(Box::new(lines)); }
-    loop {
-        match UI::get_action(ui.clone()).any().downcast_ref::<ActionOut>().unwrap() {
-            ActionOut::Start => {
-                game_start();
-                UI::force_draw(ui.clone());
-            },
-            ActionOut::Exit => break,
-            _ => (),
-        }
-    }
-    ui.write().stop();
-}
-
+mod filesystem;
+mod translation_english;
+//mod traducción_español;
+pub use common::*;

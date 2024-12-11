@@ -1,11 +1,29 @@
-mod communication;
 mod color;
-mod options;
 mod databox;
-mod entity_component;
+mod remove_vec;
+mod persistent_hash;
+mod coupled_heap;
+mod coords;
+mod takebox;
+mod array2d;
+mod macros;
+mod compressed_bool;
+mod sound_manager;
+mod resource_handler;
+mod various;
+mod tree;
 
-// We want both parts to be able to access any of these structures, by design.
-pub use communication::{Communicator, GameMessage, UIMessage, KeyAction};
-pub use color::{Rgb, Style, UITile, TileStyle, NORMALSTYLE, REDSTYLE, BLANKTILE, FILLEDTILE};
-pub use entity_component::EntityComponentSystem;
+pub use coupled_heap::CoupledHeap;
+pub use compressed_bool::CompressedBool;
+pub use array2d::{Coord, Array2D, center};
+pub use various::SliceOrVec;
+pub use persistent_hash::PersistentHash;
+pub use takebox::TakeBox;
+pub use color::*;
 pub use databox::DataBox;
+pub use remove_vec::RemoveVec;
+pub use coords::*;
+pub use tree::*;
+pub use sound_manager::{transition_default, transition_length, SoundManager};
+pub use resource_handler::ResourceHandler;
+pub type UIResources = ResourceHandler;
